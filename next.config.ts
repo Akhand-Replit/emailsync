@@ -2,7 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  /* config options here */
+  // Prevent Next.js from bundling these server-side libraries
+  serverExternalPackages: ["imapflow", "pino", "mailparser"],
 };
 
 export default nextConfig;
