@@ -1,5 +1,6 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "npm-9_x"]
+# Updated to nodejs_22 to meet jsdom requirements
+nixPkgs = ["nodejs_22", "npm-9_x"]
 
 [phases.build]
 cmds = ["npm run build", "cp -r public .next/standalone/public", "cp -r .next/static .next/standalone/.next/static"]
