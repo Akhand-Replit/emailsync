@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import DOMPurify from "isomorphic-dompurify";
 import { format } from "date-fns";
 import { Loader2, X, Reply, Trash2, ExternalLink, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -65,6 +64,9 @@ export function EmailView({ email, account, isOpen, onClose }: EmailViewProps) {
         const data = await res.json();
 
         if (data.error) throw new Error(data.error);
+
+        // Dynamic import to ensure it only runs on client
+        const DOMPurify = (await import("dompurify")).default;
 
         const cleanHtml = DOMPurify.sanitize(data.email.html || data.email.text || "<div>No content</div>", {
           USE_PROFILES: { html: true },
