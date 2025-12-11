@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { account } = body;
+    const { account, page = 0 } = body;
 
     if (!account || !account.encryptedPassword) {
       return NextResponse.json(
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     });
 
     const emails: any[] = [];
-    
+
     const connectionTimeout = new Promise((_, reject) =>
       setTimeout(() => reject(new Error("Connection timed out")), 10000)
     );
@@ -39,24 +39,41 @@ export async function POST(request: Request) {
       await Promise.race([client.connect(), connectionTimeout]);
 
       // We must specifically open the inbox
-      await client.getMailboxLock("INBOX");
+      const mailbox = await client.getMailboxLock("INBOX");
 
       try {
-        // Fetch all messages. 
-        // Note: '1:*' gets everything.
-        for await (const message of client.fetch("1:*", {
-          envelope: true,
-          uid: true,
-          flags: true
-        })) {
-          emails.push({
-            uid: message.uid,
-            subject: message.envelope.subject,
-            from: message.envelope.from[0]?.address || "Unknown",
-            date: message.envelope.date,
-            flags: Array.from(message.flags), // Convert Set to Array for serialization
-            account_id: account.id,
-          });
+        const totalMessages = client.mailbox.exists || 0;
+
+        // Pagination Logic
+        const pageSize = 50;
+        // If page 0, end is total. If page 1, end is total - 50.
+        // IMAP sequences are 1-based.
+        const endSeq = Math.max(1, totalMessages - (page * pageSize));
+        const startSeq = Math.max(1, endSeq - pageSize + 1);
+
+        // If start > end (e.g. we fetched everything), return empty
+        if (endSeq < 1 || startSeq > endSeq) {
+          console.log(`No more messages for ${account.email} (Page ${page})`);
+          // return empty emails
+        } else {
+          const range = `${startSeq}:${endSeq}`;
+          console.log(`Fetching page ${page} for ${account.email} (Range: ${range}, Total: ${totalMessages})`);
+
+          // Fetch messages using the calculated range
+          for await (const message of client.fetch(range, {
+            envelope: true,
+            uid: true,
+            flags: true
+          })) {
+            emails.push({
+              uid: message.uid,
+              subject: message.envelope.subject,
+              from: message.envelope.from[0]?.address || "Unknown",
+              date: message.envelope.date,
+              flags: Array.from(message.flags), // Convert Set to Array for serialization
+              account_id: account.id,
+            });
+          }
         }
       } finally {
         // Make sure to release the lock, but we are logging out anyway

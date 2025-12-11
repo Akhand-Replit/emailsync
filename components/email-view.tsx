@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { format } from "date-fns";
-import { Loader2, X, Reply, Trash2, ExternalLink, AlertCircle } from "lucide-react";
+import { Loader2, X, Reply, Trash2, ExternalLink, AlertCircle, FileDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "sonner";
 import {
   Sheet,
   SheetContent,
@@ -34,7 +35,7 @@ const getWebmailLink = (provider: string, host: string) => {
       return "https://outlook.live.com/";
     default:
       // Fallback for custom hosts, try to guess or just use the host
-      return `https://${host}`; 
+      return `https://${host}`;
   }
 };
 
@@ -55,9 +56,9 @@ export function EmailView({ email, account, isOpen, onClose }: EmailViewProps) {
         const res = await fetch("/api/get-message", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 
-            account: account, 
-            uid: email.uid 
+          body: JSON.stringify({
+            account: account,
+            uid: email.uid
           }),
         });
 
@@ -91,35 +92,78 @@ export function EmailView({ email, account, isOpen, onClose }: EmailViewProps) {
   // Determine webmail link
   const webmailUrl = account ? getWebmailLink(account.provider, account.host) : "#";
 
+  // --- Download EML Logic ---
+  const handleDownload = async (format: 'pdf' | 'eml') => {
+    try {
+      toast.info(`Preparing ${format.toUpperCase()} download...`);
+      const res = await fetch("/api/download-eml", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account, uid: email.uid }),
+      });
+
+      if (!res.ok) throw new Error("Failed to download email data");
+
+      const emlText = await res.text();
+
+      if (format === 'eml') {
+        // Download raw EML
+        const blob = new Blob([emlText], { type: "message/rfc822" });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${(email.subject || "email").substring(0, 30)}.eml`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        toast.success("EML downloaded");
+      } else {
+        // Generate PDF
+        const { parseEML, generatePDF } = await import("@/lib/eml-utils");
+        const parsed = parseEML(emlText);
+        await generatePDF(parsed);
+        toast.success("PDF downloaded");
+      }
+
+    } catch (err) {
+      console.error("Download Error", err);
+      toast.error("Failed to download email");
+    }
+  };
+
   return (
     <Sheet open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <SheetContent className="w-full sm:max-w-xl md:max-w-2xl p-0 gap-0 sm:duration-300 flex flex-col bg-white">
         {/* Header Section */}
         <SheetHeader className="p-6 pb-4 border-b text-left shrink-0">
           <div className="flex items-start justify-between mb-4">
-             <div className="space-y-1">
-                <SheetTitle className="font-semibold text-lg leading-tight">
-                  {email.subject || "(No Subject)"}
-                </SheetTitle>
-                <SheetDescription className="text-sm text-muted-foreground">
-                  {email.from}
-                </SheetDescription>
-             </div>
-             <div className="flex items-center gap-2">
-                <Button variant="ghost" size="icon" disabled>
-                    <Reply className="h-4 w-4" />
-                </Button>
-                <Button variant="ghost" size="icon" disabled>
-                    <Trash2 className="h-4 w-4" />
-                </Button>
-             </div>
+            <div className="space-y-1">
+              <SheetTitle className="font-semibold text-lg leading-tight">
+                {email.subject || "(No Subject)"}
+              </SheetTitle>
+              <SheetDescription className="text-sm text-muted-foreground">
+                {email.from}
+              </SheetDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="icon" disabled>
+                <Reply className="h-4 w-4" />
+              </Button>
+              <Button variant="ghost" size="icon" onClick={() => handleDownload('pdf')} title="Download as PDF">
+                <FileDown className="h-4 w-4" />
+              </Button>
+              <Button variant="ghost" size="icon" disabled>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
-          
+
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-             <span>{format(new Date(email.date), "PPpp")}</span>
-             <span className="bg-zinc-100 px-2 py-1 rounded text-zinc-500">
-                {account?.label || "Inbox"}
-             </span>
+            <span>{format(new Date(email.date), "PPpp")}</span>
+            <span className="bg-zinc-100 px-2 py-1 rounded text-zinc-500">
+              {account?.label || "Inbox"}
+            </span>
           </div>
         </SheetHeader>
 
@@ -132,31 +176,36 @@ export function EmailView({ email, account, isOpen, onClose }: EmailViewProps) {
             </div>
           ) : error ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center">
-               <div className="p-4 bg-red-50 rounded-full mb-4">
-                 <AlertCircle className="h-8 w-8 text-red-500" />
-               </div>
-               <h3 className="text-lg font-semibold text-zinc-900 mb-2">Unable to Render Email</h3>
-               <p className="text-sm text-muted-foreground max-w-xs mb-6">
-                 This email contains complex data or server errors (like invalid IMAP messagesets) that cannot be displayed here.
-               </p>
-               
-               <Button asChild className="w-full max-w-[200px]">
-                 <a href={webmailUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
-                   Open Webmail <ExternalLink className="h-4 w-4" />
-                 </a>
-               </Button>
+              <div className="p-4 bg-red-50 rounded-full mb-4">
+                <AlertCircle className="h-8 w-8 text-red-500" />
+              </div>
+              <h3 className="text-lg font-semibold text-zinc-900 mb-2">Unable to Render Email</h3>
+              <p className="text-sm text-muted-foreground max-w-xs mb-6">
+                This email contains complex data or server errors (like invalid IMAP messagesets) that cannot be displayed here.
+              </p>
 
-               {/* Debug info for developer */}
-               <div className="mt-8 p-2 bg-zinc-100 rounded text-[10px] text-zinc-400 font-mono max-w-sm break-all">
-                 Error: {error}
-               </div>
+              <div className="flex flex-col gap-2 w-full max-w-[240px]">
+                <Button onClick={() => handleDownload('pdf')} className="w-full flex items-center gap-2">
+                  <FileDown className="h-4 w-4" /> Download as PDF
+                </Button>
+                <Button variant="outline" asChild className="w-full">
+                  <a href={webmailUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 justify-center">
+                    Open Webmail <ExternalLink className="h-4 w-4" />
+                  </a>
+                </Button>
+              </div>
+
+              {/* Debug info for developer */}
+              <div className="mt-8 p-2 bg-zinc-100 rounded text-[10px] text-zinc-400 font-mono max-w-sm break-all">
+                Error: {error}
+              </div>
             </div>
           ) : (
             <ScrollArea className="h-full w-full">
               <div className="p-6">
-                <div 
+                <div
                   className="email-content text-sm leading-relaxed text-zinc-800"
-                  dangerouslySetInnerHTML={{ __html: fullBody }} 
+                  dangerouslySetInnerHTML={{ __html: fullBody }}
                 />
               </div>
             </ScrollArea>

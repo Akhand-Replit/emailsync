@@ -27,7 +27,11 @@ import {
 } from "@/components/ui/select";
 import { Loader2, Plus } from "lucide-react";
 
-export function AddAccountModal() {
+interface AddAccountModalProps {
+  existingAccounts?: { email: string }[];
+}
+
+export function AddAccountModal({ existingAccounts = [] }: AddAccountModalProps) {
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -64,6 +68,16 @@ export function AddAccountModal() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+
+    // Duplicate Check
+    const isDuplicate = existingAccounts.some(
+      (acc) => acc.email.toLowerCase() === formData.email.toLowerCase()
+    );
+
+    if (isDuplicate) {
+      toast.error("This email is already added to your accounts.");
+      return;
+    }
 
     setLoading(true);
     try {
@@ -105,7 +119,7 @@ export function AddAccountModal() {
 
       toast.success("Account verified and added successfully");
       setOpen(false);
-      
+
       // Reset form
       setFormData({
         label: "",
