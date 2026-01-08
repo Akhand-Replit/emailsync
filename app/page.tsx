@@ -1,16 +1,17 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
-import { db } from "@/lib/firebase";
-import { collection, query, onSnapshot, orderBy, deleteDoc, doc } from "firebase/firestore";
+import { useEmail } from "@/components/email-provider"; // NEW
 import { AddAccountModal } from "@/components/add-account-modal";
 import { EmailView } from "@/components/email-view";
-import { DashboardStats } from "@/components/dashboard-stats"; // Import our new component
+import { DashboardStats } from "@/components/dashboard-stats";
 import { PWAInstallButton } from "@/components/pwa-install-button";
 
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from "@/components/ui/pagination";
 import { RefreshCw, LogOut, Mail, Inbox, MailOpen, Trash2, LayoutDashboard, CheckCircle2, Settings } from "lucide-react";
 import {
   AlertDialog,
@@ -59,19 +60,32 @@ export default function DashboardPage() {
   const { user, loading, logout } = useAuth();
   const router = useRouter();
 
-  // Data State
-  const [accounts, setAccounts] = useState<MailAccount[]>([]);
-  const [emails, setEmails] = useState<EmailMessage[]>([]);
-  const [isFetching, setIsFetching] = useState(false);
-  const [page, setPage] = useState(0);
+  // Use Global Email Context
+  const {
+    accounts,
+    emails,
+    isFetching,
+    page,
+    setPage,
+    selectedAccountId,
+    setSelectedAccountId,
+    viewMode,
+    setViewMode,
+    syncTotal,
+    syncProgress,
+    showSyncProgress,
+    syncStatus,
+    currentSyncAccount,
+    fetchedCount,
+    fetchAllMail,
+    handleToggleReadStatus,
+    deleteAccount
+  } = useEmail();
 
-  // UI State
-  const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
-  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  // Local UI State (Keep these local as they are view-specific)
   const [showLoadModal, setShowLoadModal] = useState(false);
   const [hasLoadedInitial, setHasLoadedInitial] = useState(false);
 
-  // Actions State
   const [accountToDelete, setAccountToDelete] = useState<string | null>(null);
   const [viewEmail, setViewEmail] = useState<EmailMessage | null>(null);
   const [isViewOpen, setIsViewOpen] = useState(false);
@@ -85,108 +99,22 @@ export default function DashboardPage() {
     if (!loading) {
       if (!user) {
         router.push("/login");
-      } else if (!hasLoadedInitial && accounts.length > 0) {
+      } else if (!hasLoadedInitial && accounts.length > 0 && emails.length === 0) {
         // Only show modal if we have accounts but haven't loaded mail yet
-        setShowLoadModal(true);
-      }
-    }
-  }, [user, loading, router, hasLoadedInitial, accounts.length]);
-
-  // 2. Listen for Accounts
-  useEffect(() => {
-    if (!user) return;
-    const q = query(
-      collection(db, "users", user.uid, "mail_accounts"),
-      orderBy("createdAt", "desc")
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const accountsData = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })) as MailAccount[];
-      setAccounts(accountsData);
-    });
-
-    return () => unsubscribe();
-  }, [user]);
-
-  // Load from cache on mount
-  useEffect(() => {
-    if (!user) return;
-    const key = `emailsync_cached_emails_${user.uid}`;
-    const cached = localStorage.getItem(key);
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setEmails(parsed);
+        // Check emails.length === 0 so we don't show it if we already have cache
+        if (sessionStorage.getItem(`emailsync_cached_emails_${user.uid}`)) {
           setHasLoadedInitial(true);
+        } else {
+          setShowLoadModal(true);
         }
-      } catch (e) {
-        console.error("Failed to parse email cache", e);
       }
     }
-  }, [user]);
+  }, [user, loading, router, hasLoadedInitial, accounts.length, emails.length]);
 
-  // Save to cache on change
-  useEffect(() => {
-    if (!user || emails.length === 0) return;
-    const key = `emailsync_cached_emails_${user.uid}`;
-    localStorage.setItem(key, JSON.stringify(emails));
-  }, [emails, user]);
-
-  // 3. Fetch Mail Function
-  const fetchAllMail = useCallback(async (pageIndex: number | any = 0) => {
-    // Handle event objects if passed directly
-    const targetPage = typeof pageIndex === 'number' ? pageIndex : 0;
-
-    if (accounts.length === 0) return;
-
-    setIsFetching(true);
-    if (targetPage > 0) setPage(targetPage); // Update current page if fetching older
-
-    // Close modal immediately when starting fetch
-    setShowLoadModal(false);
-    setHasLoadedInitial(true);
-
-    // Use Promise.allSettled to ensure one failure doesn't stop others
-    const promises = accounts.map(account =>
-      fetch("/api/check-mail", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account, page: targetPage }),
-      })
-        .then(res => res.json())
-        .then(data => data.emails || [])
-        .catch(error => {
-          console.error(`Failed to fetch for ${account.email}`, error);
-          return [];
-        })
-    );
-
-    const results = await Promise.all(promises);
-
-    // SMART MERGE: Combine new results with existing emails, deduplicate by unique key
-    const newEmailsFlat = results.flat() as EmailMessage[];
-
-    setEmails(prev => {
-      const unique = new Map<string, EmailMessage>();
-
-      // 1. Add existing cached emails
-      prev.forEach(e => unique.set(e.uid + e.account_id, e));
-
-      // 2. Add/Update with new emails (overwriting existing to update flags like 'read')
-      newEmailsFlat.forEach(e => unique.set(e.uid + e.account_id, e));
-
-      const merged = Array.from(unique.values());
-      merged.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      return merged;
-    });
-
-    setIsFetching(false);
-    toast.success("Inbox synced");
-  }, [accounts]);
+  const handlePageChange = (newPage: number) => {
+    if (newPage < 0) return;
+    fetchAllMail(newPage, false);
+  };
 
   // 4. Navigation Handlers
   const handleGoToOverview = () => {
@@ -200,70 +128,18 @@ export default function DashboardPage() {
   };
 
   // 5. Mark as Read & View
-  // 5. Toggle Read/Unread
-  const handleToggleReadStatus = async (e: React.MouseEvent, email: EmailMessage) => {
-    e.stopPropagation();
-    const isCurrentlyRead = email.flags.includes('\\Seen');
-
-    // Optimistic Update
-    setEmails((prev) =>
-      prev.map((msg) =>
-        msg.uid === email.uid && msg.account_id === email.account_id
-          ? {
-            ...msg,
-            flags: isCurrentlyRead
-              ? msg.flags.filter(f => f !== '\\Seen')
-              : [...msg.flags, '\\Seen']
-          }
-          : msg
-      )
-    );
-
-    try {
-      const account = accounts.find(a => a.id === email.account_id);
-      if (!account) return;
-
-      const endpoint = isCurrentlyRead ? "/api/mark-unread" : "/api/mark-read";
-
-      await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account, uid: email.uid }),
-      });
-      toast.success(isCurrentlyRead ? "Marked as unread" : "Marked as read");
-    } catch (error) {
-      console.error("Failed to toggle status", error);
-      toast.error("Failed to update status");
-      // Revert optimistic update? (Simplified: left out for now)
-    }
-  };
-
   const handleEmailClick = (email: EmailMessage) => {
     setViewEmail(email);
     setIsViewOpen(true);
     if (!email.flags.includes('\\Seen')) {
-      setEmails((prev) =>
-        prev.map((msg) =>
-          msg.uid === email.uid && msg.account_id === email.account_id
-            ? { ...msg, flags: [...msg.flags, '\\Seen'] }
-            : msg
-        )
-      );
+      handleToggleReadStatus(null, email);
     }
   };
 
   const handleDeleteAccount = async () => {
-    if (!accountToDelete || !user) return;
+    if (!accountToDelete) return;
     try {
-      await deleteDoc(doc(db, "users", user.uid, "mail_accounts", accountToDelete));
-      toast.success("Account removed");
-      if (selectedAccountId === accountToDelete) {
-        handleGoToOverview();
-      }
-      setEmails(prev => prev.filter(e => e.account_id !== accountToDelete));
-    } catch (error) {
-      console.error("Delete error", error);
-      toast.error("Failed to delete account");
+      await deleteAccount(accountToDelete);
     } finally {
       setAccountToDelete(null);
     }
@@ -433,7 +309,7 @@ export default function DashboardPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={fetchAllMail}
+              onClick={() => fetchAllMail(0, true)}
               disabled={isFetching || accounts.length === 0}
               className="gap-2"
             >
@@ -465,78 +341,134 @@ export default function DashboardPage() {
                   <p>No emails found (try syncing)</p>
                 </div>
               ) : (
-                <div className="divide-y divide-zinc-100 bg-white">
-                  {filteredEmails.map((email) => {
-                    const isRead = email.flags && email.flags.includes('\\Seen');
-                    return (
-                      <div
-                        key={email.uid + email.account_id}
-                        onClick={() => handleEmailClick(email)}
-                        className={`flex items-start p-4 hover:bg-zinc-50 cursor-pointer group transition-colors relative border-b last:border-0 ${!isRead ? 'bg-blue-50/40' : ''}`}
-                      >
-                        {/* Status Indicator Bar */}
-                        {!isRead && (
-                          <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500" />
-                        )}
+                <div className="flex flex-col min-h-full">
+                  <div className="divide-y divide-zinc-100 bg-white flex-1">
+                    {filteredEmails.map((email) => {
+                      const isRead = email.flags && email.flags.includes('\\Seen');
+                      return (
+                        <div
+                          key={email.uid + email.account_id}
+                          onClick={() => handleEmailClick(email)}
+                          className={`flex items-start p-4 hover:bg-zinc-50 cursor-pointer group transition-colors relative border-b last:border-0 ${!isRead ? 'bg-blue-50/40' : ''}`}
+                        >
+                          {/* Status Indicator Bar */}
+                          {!isRead && (
+                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500" />
+                          )}
 
-                        <div className="flex-1 min-w-0 pl-3">
-                          <div className="flex items-center justify-between mb-1.5">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <p className={`text-sm truncate pr-2 ${!isRead ? 'text-blue-950 font-bold' : 'text-zinc-700 font-medium'}`}>
-                                {email.from.replace(/"/g, '').split('<')[0]}
-                              </p>
-                              {!isRead && (
-                                <span className="flex-shrink-0 w-2 h-2 rounded-full bg-blue-500"></span>
-                              )}
+                          <div className="flex-1 min-w-0 pl-3">
+                            <div className="flex items-center justify-between mb-1.5">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <p className={`text-sm truncate pr-2 ${!isRead ? 'text-blue-950 font-bold' : 'text-zinc-700 font-medium'}`}>
+                                  {email.from.replace(/"/g, '').split('<')[0]}
+                                </p>
+                                {!isRead && (
+                                  <span className="flex-shrink-0 w-2 h-2 rounded-full bg-blue-500"></span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-3">
+                                <span className={`text-xs whitespace-nowrap ${!isRead ? 'text-blue-600 font-medium' : 'text-zinc-400'}`}>
+                                  {(() => {
+                                    try {
+                                      const d = new Date(email.date);
+                                      return isNaN(d.getTime()) ? "Unknown date" : formatDistanceToNow(d, { addSuffix: true });
+                                    } catch (e) {
+                                      return "Unknown date";
+                                    }
+                                  })()}
+                                </span>
+
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className={`h-8 w-8 -mr-2 transition-colors ${isRead
+                                    ? "text-zinc-300 hover:text-blue-600 hover:bg-blue-50 opacity-0 group-hover:opacity-100"
+                                    : "text-blue-400 hover:text-blue-600 hover:bg-blue-100"
+                                    }`}
+                                  title={isRead ? "Mark as unread" : "Mark as read"}
+                                  onClick={(e) => handleToggleReadStatus(e, email)}
+                                >
+                                  {isRead ? (
+                                    <Mail className="h-4 w-4" />
+                                  ) : (
+                                    <MailOpen className="h-4 w-4" />
+                                  )}
+                                </Button>
+                              </div>
                             </div>
 
-                            <div className="flex items-center gap-3">
-                              <span className={`text-xs whitespace-nowrap ${!isRead ? 'text-blue-600 font-medium' : 'text-zinc-400'}`}>
-                                {formatDistanceToNow(new Date(email.date), { addSuffix: true })}
-                              </span>
+                            <h4 className={`text-sm truncate leading-snug mb-0.5 group-hover:text-primary transition-colors ${!isRead ? 'text-zinc-900 font-semibold' : 'text-zinc-600'}`}>
+                              {email.subject || "(No Subject)"}
+                            </h4>
+                            <p className="text-xs text-muted-foreground truncate opacity-80">
+                              {/* Preview snippet could go here if available */}
+                              {email.account_id && accounts.find(a => a.id === email.account_id)?.label}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
 
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className={`h-8 w-8 -mr-2 transition-colors ${isRead
-                                  ? "text-zinc-300 hover:text-blue-600 hover:bg-blue-50 opacity-0 group-hover:opacity-100"
-                                  : "text-blue-400 hover:text-blue-600 hover:bg-blue-100"
-                                  }`}
-                                title={isRead ? "Mark as unread" : "Mark as read"}
-                                onClick={(e) => handleToggleReadStatus(e, email)}
-                              >
-                                {isRead ? (
-                                  <Mail className="h-4 w-4" />
-                                ) : (
-                                  <MailOpen className="h-4 w-4" />
-                                )}
-                              </Button>
+                  {/* Pagination & Load More Controls */}
+                  {!loading && emails.length > 0 && (
+                    <div className="mt-auto"> {/* mt-auto pushes to bottom if parent is flex col */}
+                      <>
+                        {/* 1. Full Pagination: If we know the total and are viewing a specific account */}
+                        {selectedAccountId && syncTotal > 0 ? (
+                          <div className="py-6 bg-white border-t border-zinc-200">
+                            <Pagination>
+                              <PaginationContent>
+                                <PaginationItem>
+                                  <PaginationPrevious
+                                    onClick={() => handlePageChange(page - 1)}
+                                    className={page === 0 ? "pointer-events-none opacity-50" : "cursor-pointer"}
+                                  />
+                                </PaginationItem>
+
+                                {[...Array(Math.min(5, Math.ceil(syncTotal / 50)))].map((_, i) => {
+                                  const p = i;
+                                  return (
+                                    <PaginationItem key={p}>
+                                      <PaginationLink
+                                        isActive={page === p}
+                                        onClick={() => handlePageChange(p)}
+                                        className="cursor-pointer"
+                                      >
+                                        {p + 1}
+                                      </PaginationLink>
+                                    </PaginationItem>
+                                  );
+                                })}
+
+                                <PaginationItem>
+                                  <PaginationEllipsis />
+                                </PaginationItem>
+
+                                <PaginationItem>
+                                  <PaginationNext
+                                    onClick={() => handlePageChange(page + 1)}
+                                    className={(page + 1) * 50 >= syncTotal ? "pointer-events-none opacity-50" : "cursor-pointer"}
+                                  />
+                                </PaginationItem>
+                              </PaginationContent>
+                            </Pagination>
+                            <div className="text-center text-xs text-muted-foreground mt-2">
+                              Page {page + 1} of {Math.ceil(syncTotal / 50)} (Total {syncTotal} emails)
                             </div>
                           </div>
-
-                          <h4 className={`text-sm truncate leading-snug mb-0.5 group-hover:text-primary transition-colors ${!isRead ? 'text-zinc-900 font-semibold' : 'text-zinc-600'}`}>
-                            {email.subject || "(No Subject)"}
-                          </h4>
-                          <p className="text-xs text-muted-foreground truncate opacity-80">
-                            {/* Preview snippet could go here if available */}
-                            {email.account_id && accounts.find(a => a.id === email.account_id)?.label}
-                          </p>
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {/* Load More Button */}
-                  <div className="p-4 flex justify-center border-t bg-zinc-50/50">
-                    <Button
-                      variant="outline"
-                      onClick={() => fetchAllMail(page + 1)}
-                      disabled={isFetching}
-                      className="min-w-[120px]"
-                    >
-                      {isFetching ? "Loading..." : "Load Older Emails"}
-                    </Button>
-                  </div>
+                        ) : (
+                          /* 2. Fallback: If total unknown or All Inboxes */
+                          <div className="p-4 flex justify-center bg-zinc-50 border-t border-zinc-200">
+                            <Button variant="outline" onClick={() => fetchAllMail(page + 1)}>
+                              {selectedAccountId ? "Load Next Page" : "Load Older Emails"}
+                            </Button>
+                          </div>
+                        )}
+                      </>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -544,7 +476,7 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      {/* Load Mail Modal (Shows on startup) */}
+      {/* Load Mail Modal */}
       <Dialog open={showLoadModal} onOpenChange={setShowLoadModal}>
         <DialogContent className="sm:max-w-[400px]">
           <DialogHeader>
@@ -554,13 +486,64 @@ export default function DashboardPage() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-4 sm:justify-between gap-2">
-            <Button variant="ghost" onClick={() => setShowLoadModal(false)}>
+            <Button variant="ghost" onClick={() => {
+              setShowLoadModal(false);
+              setHasLoadedInitial(true);
+            }}>
               Skip for now
             </Button>
-            <Button onClick={fetchAllMail} className="w-full sm:w-auto gap-2">
+            <Button onClick={() => {
+              fetchAllMail(0, true);
+              setShowLoadModal(false);
+              setHasLoadedInitial(true);
+            }} className="w-full sm:w-auto gap-2">
               <RefreshCw className="h-4 w-4" /> Load All Mail
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Sync Progress Modal */}
+      <Dialog open={showSyncProgress} onOpenChange={() => { }}>
+        <DialogContent className="sm:max-w-[400px]" onPointerDownOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle className="text-center">Syncing Emails</DialogTitle>
+            <DialogDescription className="text-center">
+              Please wait while we update your inbox...
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-6 space-y-6">
+
+            <div className="flex flex-col items-center justify-center text-center space-y-4">
+              <div className="h-12 w-12 bg-primary/10 rounded-full flex items-center justify-center relative">
+                <RefreshCw className="h-6 w-6 text-primary animate-spin" />
+              </div>
+
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm text-zinc-900">
+                  {currentSyncAccount ? `Checking ${currentSyncAccount}...` : "Starting sync..."}
+                </h4>
+                <p className="text-xs text-muted-foreground">
+                  {syncStatus}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 bg-zinc-100 rounded-full px-4 py-1.5 border border-zinc-200">
+                <Mail className="h-3.5 w-3.5 text-zinc-500" />
+                <span className="text-xs font-medium text-zinc-700">
+                  {fetchedCount > 0 ? `${fetchedCount} new emails found` : "Looking for emails..."}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-2 px-2">
+              <Progress value={syncProgress} className="h-1.5" />
+              <div className="flex justify-between text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
+                <span>Progress</span>
+                <span>{syncProgress}%</span>
+              </div>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 

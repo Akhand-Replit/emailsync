@@ -7,7 +7,7 @@ import { db } from "@/lib/firebase";
 import { collection, query, onSnapshot, orderBy, deleteDoc, doc } from "firebase/firestore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ArrowLeft, Trash2, Mail, Server, Shield, Search, Plus } from "lucide-react";
+import { ArrowLeft, Trash2, Mail, Server, Shield, Search, Plus, RefreshCw, CheckCircle2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import {
     AlertDialog,
@@ -36,6 +36,10 @@ export default function AccountsPage() {
     const [accounts, setAccounts] = useState<MailAccount[]>([]);
     const [accountToDelete, setAccountToDelete] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState("");
+
+    // Connection Check State
+    const [checkingConnections, setCheckingConnections] = useState(false);
+    const [connectionStatus, setConnectionStatus] = useState<Record<string, { status: "success" | "error", message?: string }>>({});
 
     // Protect Route
     useEffect(() => {
@@ -76,6 +80,39 @@ export default function AccountsPage() {
         }
     };
 
+    const handleCheckConnections = async () => {
+        setCheckingConnections(true);
+        setConnectionStatus({});
+
+        const newStatus: Record<string, { status: "success" | "error", message?: string }> = {};
+
+        for (const account of accounts) {
+            try {
+                const res = await fetch("/api/check-connection", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(account),
+                });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    newStatus[account.id] = { status: "success" };
+                } else {
+                    newStatus[account.id] = { status: "error", message: data.error || "Connection failed" };
+                }
+            } catch (error) {
+                newStatus[account.id] = { status: "error", message: "Network error" };
+            }
+            // Update progressively
+            setConnectionStatus(prev => ({ ...prev, [account.id]: newStatus[account.id] }));
+        }
+
+        setCheckingConnections(false);
+        toast.info("Connection check complete");
+    };
+
+    // Filter Accounts
+
     // Filter Accounts
     const filteredAccounts = accounts.filter(acc => {
         const q = searchQuery.toLowerCase();
@@ -102,6 +139,16 @@ export default function AccountsPage() {
                     </Button>
                     <h1 className="text-xl font-bold text-zinc-900 tracking-tight">Manage Accounts</h1>
                 </div>
+                <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCheckConnections}
+                    disabled={checkingConnections || accounts.length === 0}
+                    className="gap-2"
+                >
+                    <RefreshCw className={`h-4 w-4 ${checkingConnections ? "animate-spin" : ""}`} />
+                    {checkingConnections ? "Checking..." : "Check Connections"}
+                </Button>
             </header>
 
             <main className="flex-1 p-6 max-w-5xl mx-auto w-full space-y-6">
@@ -151,57 +198,69 @@ export default function AccountsPage() {
                             </div>
 
                             {/* Account Rows */}
-                            {filteredAccounts.map((account) => (
-                                <div key={account.id} className="grid grid-cols-1 md:grid-cols-12 gap-4 p-4 items-center hover:bg-zinc-50/50 transition-all group">
+                            {filteredAccounts.map((account) => {
+                                const status = connectionStatus[account.id];
+                                return (
+                                    <div key={account.id} className={`grid grid-cols-1 md:grid-cols-12 gap-4 p-4 items-center hover:bg-zinc-50/50 transition-all group border-l-4 ${status?.status === 'error' ? 'border-l-red-500 bg-red-50/10' : status?.status === 'success' ? 'border-l-green-500' : 'border-l-transparent'}`}>
 
-                                    {/* Mobile Label (Visible only on small screens) */}
-                                    <div className="md:col-span-12 md:hidden flex items-center justify-between mb-2">
-                                        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Account</span>
-                                        <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            className="h-8 w-8 text-muted-foreground hover:text-red-600 hover:bg-red-50"
-                                            onClick={() => setAccountToDelete(account.id)}
-                                        >
-                                            <Trash2 className="h-4 w-4" />
-                                        </Button>
-                                    </div>
-
-                                    <div className="md:col-span-5 flex items-center gap-4 min-w-0">
-                                        <div className="h-10 w-10 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0 shadow-sm">
-                                            <Mail className="h-5 w-5 text-blue-600" />
+                                        {/* Mobile Label (Visible only on small screens) */}
+                                        <div className="md:col-span-12 md:hidden flex items-center justify-between mb-2">
+                                            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Account</span>
+                                            <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-8 w-8 text-muted-foreground hover:text-red-600 hover:bg-red-50"
+                                                onClick={() => setAccountToDelete(account.id)}
+                                            >
+                                                <Trash2 className="h-4 w-4" />
+                                            </Button>
                                         </div>
-                                        <div className="min-w-0 flex-1">
-                                            <div className="font-semibold text-zinc-900 truncate leading-tight">{account.label}</div>
-                                            <div className="text-sm text-zinc-500 truncate font-mono mt-0.5">{account.email}</div>
+
+                                        <div className="md:col-span-5 flex items-center gap-4 min-w-0">
+                                            <div className="h-10 w-10 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0 shadow-sm">
+                                                <Mail className="h-5 w-5 text-blue-600" />
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="font-semibold text-zinc-900 truncate leading-tight">{account.label}</div>
+                                                <div className="text-sm text-zinc-500 truncate font-mono mt-0.5">{account.email}</div>
+                                            </div>
+                                        </div>
+
+                                        <div className="md:col-span-3 flex items-center gap-2 mt-2 md:mt-0">
+                                            <Badge variant="outline" className="bg-zinc-50 font-normal gap-1.5 px-3 py-1">
+                                                <Shield className="h-3 w-3 opacity-60" />
+                                                {account.provider}
+                                            </Badge>
+                                        </div>
+
+                                        <div className="md:col-span-3 text-sm text-zinc-500 flex items-center gap-2 mt-1 md:mt-0 font-mono">
+                                            <Server className="h-3.5 w-3.5 opacity-50" />
+                                            <span className="truncate">{account.host}:{account.port}</span>
+                                        </div>
+
+                                        <div className="md:col-span-1 hidden md:flex justify-end items-center gap-2">
+                                            {status && (
+                                                <div title={status.message}>
+                                                    {status.status === 'success' ? (
+                                                        <CheckCircle2 className="h-5 w-5 text-green-500" />
+                                                    ) : (
+                                                        <AlertCircle className="h-5 w-5 text-red-500" />
+                                                    )}
+                                                </div>
+                                            )}
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8 text-zinc-400 group-hover:text-red-600 hover:bg-red-50 transition-colors"
+                                                title="Delete Account"
+                                                onClick={() => setAccountToDelete(account.id)}
+                                            >
+                                                <Trash2 className="h-4 w-4" />
+                                            </Button>
                                         </div>
                                     </div>
-
-                                    <div className="md:col-span-3 flex items-center gap-2 mt-2 md:mt-0">
-                                        <Badge variant="outline" className="bg-zinc-50 font-normal gap-1.5 px-3 py-1">
-                                            <Shield className="h-3 w-3 opacity-60" />
-                                            {account.provider}
-                                        </Badge>
-                                    </div>
-
-                                    <div className="md:col-span-3 text-sm text-zinc-500 flex items-center gap-2 mt-1 md:mt-0 font-mono">
-                                        <Server className="h-3.5 w-3.5 opacity-50" />
-                                        <span className="truncate">{account.host}:{account.port}</span>
-                                    </div>
-
-                                    <div className="md:col-span-1 hidden md:flex justify-end">
-                                        <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            className="h-8 w-8 text-zinc-400 group-hover:text-red-600 hover:bg-red-50 transition-colors"
-                                            title="Delete Account"
-                                            onClick={() => setAccountToDelete(account.id)}
-                                        >
-                                            <Trash2 className="h-4 w-4" />
-                                        </Button>
-                                    </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     )}
                 </div>

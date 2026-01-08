@@ -5,6 +5,9 @@ import { decryptPassword } from "@/lib/encryption";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  let client: any;
+  let totalMessages = 0;
+
   try {
     const body = await request.json();
     const { account, page = 0 } = body;
@@ -18,7 +21,7 @@ export async function POST(request: Request) {
 
     const realPassword = decryptPassword(account.encryptedPassword);
 
-    const client = new ImapFlow({
+    client = new ImapFlow({
       host: account.host,
       port: account.port,
       secure: account.port === 993,
@@ -42,7 +45,7 @@ export async function POST(request: Request) {
       const mailbox = await client.getMailboxLock("INBOX");
 
       try {
-        const totalMessages = client.mailbox.exists || 0;
+        totalMessages = client.mailbox.exists || 0;
 
         // Pagination Logic
         const pageSize = 50;
@@ -76,13 +79,18 @@ export async function POST(request: Request) {
           }
         }
       } finally {
-        // Make sure to release the lock, but we are logging out anyway
+        // Make sure to release the lock
+        if (mailbox) {
+          mailbox.release();
+        }
       }
     } catch (err: any) {
       console.error(`IMAP Error for ${account.email}:`, err.message);
       return NextResponse.json({ emails: [], error: err.message });
     } finally {
-      await client.logout();
+      if (client) {
+        await client.logout();
+      }
     }
 
     // FIX: Handle undefined dates safely for TypeScript
@@ -92,7 +100,7 @@ export async function POST(request: Request) {
       return dateB - dateA;
     });
 
-    return NextResponse.json({ emails });
+    return NextResponse.json({ emails, total: totalMessages });
 
   } catch (error: any) {
     console.error("API Error:", error);
@@ -102,3 +110,4 @@ export async function POST(request: Request) {
     );
   }
 }
+// End of file

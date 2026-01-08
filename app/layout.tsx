@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/components/auth-provider";
+import { EmailProvider } from "@/components/email-provider";
 import { Toaster } from "@/components/ui/sonner";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -29,8 +30,10 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className} suppressHydrationWarning>
         <AuthProvider>
-          {children}
-          <Toaster />
+          <EmailProvider>
+            {children}
+            <Toaster />
+          </EmailProvider>
         </AuthProvider>
       </body>
     </html>

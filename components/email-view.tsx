@@ -14,6 +14,7 @@ import {
   SheetDescription,
   SheetClose,
 } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface EmailViewProps {
   email: any | null;
@@ -160,7 +161,16 @@ export function EmailView({ email, account, isOpen, onClose }: EmailViewProps) {
           </div>
 
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>{format(new Date(email.date), "PPpp")}</span>
+            <span>
+              {(() => {
+                try {
+                  const d = new Date(email.date);
+                  return isNaN(d.getTime()) ? "Unknown date" : format(d, "PPpp");
+                } catch (e) {
+                  return "";
+                }
+              })()}
+            </span>
             <span className="bg-zinc-100 px-2 py-1 rounded text-zinc-500">
               {account?.label || "Inbox"}
             </span>
@@ -170,9 +180,24 @@ export function EmailView({ email, account, isOpen, onClose }: EmailViewProps) {
         {/* Content Area */}
         <div className="flex-1 min-h-0 relative">
           {loading ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground space-y-4">
-              <Loader2 className="h-8 w-8 animate-spin text-primary" />
-              <p>Fetching secure content...</p>
+            <div className="p-6 space-y-6">
+              {/* Skeleton Header */}
+              <div className="space-y-4">
+                <Skeleton className="h-8 w-3/4" />
+                <div className="flex gap-4">
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-4 w-24" />
+                </div>
+              </div>
+
+              {/* Skeleton Body */}
+              <div className="space-y-3 pt-4">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-5/6" />
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-4/5" />
+              </div>
             </div>
           ) : error ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center">
