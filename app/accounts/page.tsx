@@ -5,9 +5,11 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
 import { db } from "@/lib/firebase";
 import { collection, query, onSnapshot, orderBy, deleteDoc, doc } from "firebase/firestore";
+import { AddAccountModal } from "@/components/add-account-modal";
 import { Button } from "@/components/ui/button";
+import { AISettingsDialog } from "@/components/ai-settings-dialog";
 import { Input } from "@/components/ui/input";
-import { ArrowLeft, Trash2, Mail, Server, Shield, Search, Plus, RefreshCw, CheckCircle2, AlertCircle } from "lucide-react";
+import { ArrowLeft, Trash2, Mail, Server, Shield, Search, Plus, Plug, CheckCircle2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import {
     AlertDialog,
@@ -126,46 +128,63 @@ export default function AccountsPage() {
     return (
         <div className="flex min-h-screen w-full flex-col bg-zinc-50/50">
             {/* Header */}
-            <header className="h-16 border-b flex items-center justify-between px-6 bg-white sticky top-0 z-10 shrink-0">
-                <div className="flex items-center gap-4">
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => router.push("/")}
-                        className="gap-2 text-muted-foreground hover:text-foreground"
-                    >
-                        <ArrowLeft className="h-4 w-4" />
-                        Back to Dashboard
-                    </Button>
-                    <h1 className="text-xl font-bold text-zinc-900 tracking-tight">Manage Accounts</h1>
+            <header className="border-b bg-white sticky top-0 z-30 shrink-0">
+                <div className="flex items-center justify-between px-4 py-3 md:px-6 h-16">
+                    <div className="flex items-center gap-2 md:gap-4 shrink-0">
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => router.push("/")}
+                            className="gap-2 text-muted-foreground hover:text-foreground -ml-2 px-2 md:px-3"
+                            title="Back to Dashboard"
+                        >
+                            <ArrowLeft className="h-4 w-4" />
+                            <span className="hidden md:inline">Dashboard</span>
+                        </Button>
+                        <h1 className="text-lg md:text-xl font-bold text-zinc-900 tracking-tight whitespace-nowrap">
+                            Manage Accounts
+                        </h1>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        <AISettingsDialog />
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleCheckConnections}
+                            disabled={checkingConnections || accounts.length === 0}
+                            className="gap-2 h-8 w-8 md:h-9 md:w-auto p-0 md:px-4"
+                            title="Check Connections"
+                        >
+                            <Plug className={`h-4 w-4 ${checkingConnections ? "animate-spin" : ""}`} />
+                            <span className="hidden md:inline">{checkingConnections ? "Checking..." : "Check Connections"}</span>
+                        </Button>
+                    </div>
                 </div>
-                <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCheckConnections}
-                    disabled={checkingConnections || accounts.length === 0}
-                    className="gap-2"
-                >
-                    <RefreshCw className={`h-4 w-4 ${checkingConnections ? "animate-spin" : ""}`} />
-                    {checkingConnections ? "Checking..." : "Check Connections"}
-                </Button>
             </header>
 
-            <main className="flex-1 p-6 max-w-5xl mx-auto w-full space-y-6">
+            <main className="flex-1 p-4 md:p-6 max-w-5xl mx-auto w-full space-y-6">
 
                 {/* Search and Stats Section */}
-                <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
-                    <div className="relative w-full max-w-sm">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                        <Input
-                            placeholder="Search by name, email, or provider..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="pl-9 bg-white"
-                        />
-                    </div>
-                    <div className="text-sm text-muted-foreground font-medium">
-                        {accounts.length} {accounts.length === 1 ? 'Account' : 'Accounts'} Connected
+                <div className="flex flex-col gap-4">
+                    <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
+                        <div className="flex gap-2 w-full sm:max-w-lg">
+                            <div className="shrink-0">
+                                <AddAccountModal existingAccounts={accounts} />
+                            </div>
+                            <div className="relative w-full">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                <Input
+                                    placeholder="Search accounts..."
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    className="pl-9 bg-white w-full"
+                                />
+                            </div>
+                        </div>
+                        <div className="text-xs md:text-sm text-muted-foreground font-medium text-right px-1">
+                            {accounts.length} {accounts.length === 1 ? 'Account' : 'Accounts'}
+                        </div>
                     </div>
                 </div>
 

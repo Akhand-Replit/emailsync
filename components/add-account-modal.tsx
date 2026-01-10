@@ -140,8 +140,9 @@ export function AddAccountModal({ existingAccounts = [] }: AddAccountModalProps)
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="icon" title="Add Account">
+        <Button className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
           <Plus className="h-4 w-4" />
+          Add Account
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-[425px]">

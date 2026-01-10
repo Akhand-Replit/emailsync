@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { db } from "@/lib/firebase";
-import { collection, query, onSnapshot, orderBy, deleteDoc, doc } from "firebase/firestore";
+import { collection, query, onSnapshot, orderBy, deleteDoc, doc, setDoc } from "firebase/firestore";
 import { toast } from "sonner";
 
 // Types
@@ -25,6 +25,7 @@ export interface EmailMessage {
     date: string;
     flags: string[];
     account_id: string;
+    category?: string;
 }
 
 interface EmailContextType {
@@ -52,6 +53,12 @@ interface EmailContextType {
     handleToggleReadStatus: (e: React.MouseEvent | null, email: EmailMessage) => Promise<void>;
     deleteAccount: (accountId: string) => Promise<void>;
     refreshAccounts: () => void;
+    updateEmailTags: (updates: Record<string, string>) => void;
+    // Audit
+    auditAccount: (accountId: string, apiKey: string, specificEmails?: EmailMessage[]) => Promise<void>;
+    isAuditing: boolean;
+    // Sync
+    syncAllMail: (accountId: string) => Promise<EmailMessage[]>;
 }
 
 const EmailContext = createContext<EmailContextType | undefined>(undefined);
@@ -64,6 +71,9 @@ export function EmailProvider({ children }: { children: ReactNode }) {
     const [emails, setEmails] = useState<EmailMessage[]>([]);
     const [isFetching, setIsFetching] = useState(false);
     const [page, setPage] = useState(0);
+
+    // Audit State
+    const [isAuditing, setIsAuditing] = useState(false);
 
     // UI State
     const [viewMode, setViewMode] = useState<"dashboard" | "mailbox">("dashboard");
@@ -134,7 +144,25 @@ export function EmailProvider({ children }: { children: ReactNode }) {
         }
     }, [emails, user]);
 
-    // 4. Fetch Mail Function
+    // 4. Listen for Audit Tags (Persistence)
+    useEffect(() => {
+        if (!user || !selectedAccountId) return;
+
+        const docRef = doc(db, "users", user.uid, "audit_tags", selectedAccountId);
+        const unsubscribe = onSnapshot(docRef, (docSnap) => {
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                if (data.tags) {
+                    // Update local emails with these tags
+                    updateEmailTags(data.tags);
+                }
+            }
+        });
+
+        return () => unsubscribe();
+    }, [user, selectedAccountId]);
+
+    // 5. Fetch Mail Function
     const fetchAllMail = useCallback(async (pageIndex: number | any = 0, force: boolean = false) => {
         const targetPage = typeof pageIndex === 'number' ? pageIndex : 0;
 
@@ -291,6 +319,176 @@ export function EmailProvider({ children }: { children: ReactNode }) {
         // but here we just defer it or use the 'force' flag if user clicked)
     }, [selectedAccountId]);
 
+    // 7. Update AI Tags
+    const updateEmailTags = useCallback((updates: Record<string, string>) => {
+        setEmails(prev => prev.map(email => {
+            // We use UID as the key. If duplicate UIDs exist across accounts (unlikely to map 1:1 in batch but possible),
+            // we should be careful. Ideally we use a unique ID like composite.
+            // For now, we assume the caller handles uniqueness or we accept the risk of same-UID collision updates 
+            // (rare in small batches, but valid concern).
+            // Better: caller passes "uid:account_id" string? 
+            // Let's assume caller sends Key = email.uid and we are in specific account view OR caller sends composite.
+            // I will implement composite key logic in page.tsx, so here I just check if key exists.
+
+            // Note: We don't save to Firestore here to avoid loops if this is called BY the listener.
+            // Persistence is handled by the audit action or specific save actions.
+
+            // Check for simple UID match (Standard)
+            if (updates[email.uid]) {
+                return { ...email, category: updates[email.uid] };
+            }
+            // Check for Composite Match (uid_accountid)
+            const composite = `${email.uid}_${email.account_id}`;
+            if (updates[composite]) {
+                return { ...email, category: updates[composite] };
+            }
+
+            return email;
+        }));
+    }, []);
+
+    const syncAllMail = async (accountId: string): Promise<EmailMessage[]> => {
+        const account = accounts.find(a => a.id === accountId);
+        if (!account) return [];
+
+        setIsFetching(true);
+        setShowSyncProgress(true);
+        setSyncProgress(0);
+        setSyncStatus("Starting full sync...");
+        setCurrentSyncAccount(account.email);
+
+        let allEmails: EmailMessage[] = [];
+
+        try {
+            // 1. Fetch Page 0 to get Total
+            const res0 = await fetch("/api/check-mail", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ account, page: 0 }),
+            });
+            const data0 = await res0.json();
+
+            if (data0.emails) allEmails.push(...data0.emails);
+            const total = data0.total || 0;
+            setSyncTotal(total);
+
+            const totalPages = Math.ceil(total / 50);
+
+            // 2. Loop rest
+            for (let p = 1; p < totalPages; p++) {
+                setSyncStatus(`Syncing page ${p + 1} of ${totalPages}...`);
+                const res = await fetch("/api/check-mail", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ account, page: p }),
+                });
+                const data = await res.json();
+                if (data.emails) allEmails.push(...data.emails);
+
+                setSyncProgress(Math.round((p / totalPages) * 100));
+            }
+
+            // 3. Update State
+            setEmails(prev => {
+                const unique = new Map<string, EmailMessage>();
+                prev.forEach(e => unique.set(e.uid + e.account_id, e));
+                allEmails.forEach(e => unique.set(e.uid + e.account_id, e));
+                const merged = Array.from(unique.values());
+                merged.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+                return merged;
+            });
+
+            return allEmails;
+
+        } catch (e) {
+            console.error(e);
+            toast.error("Full sync failed");
+            return [];
+        } finally {
+            setIsFetching(false);
+            setShowSyncProgress(false);
+        }
+    };
+
+
+    // 8. Audit Account
+    const auditAccount = async (accountId: string, apiKey: string, specificEmails?: EmailMessage[]) => {
+        const account = accounts.find(a => a.id === accountId);
+        if (!account) return;
+
+        setIsAuditing(true);
+        try {
+            // MODE A: Specific Emails (Client-side batching)
+            if (specificEmails && specificEmails.length > 0) {
+                const BATCH_SIZE = 50;
+                let processed = 0;
+                const total = specificEmails.length;
+
+                // Process in chunks to avoid timeouts
+                for (let i = 0; i < total; i += BATCH_SIZE) {
+                    const chunk = specificEmails.slice(i, i + BATCH_SIZE);
+                    const messagesPayload = chunk.map(e => ({
+                        id: e.uid,
+                        subject: e.subject || "(No Subject)",
+                        sender: e.from || "Unknown"
+                    }));
+
+                    toast.loading(`Auditing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(total / BATCH_SIZE)}...`);
+
+                    const res = await fetch("/api/audit-account", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ account, apiKey, messages: messagesPayload }),
+                    });
+
+                    const data = await res.json();
+                    if (data.error) throw new Error(data.error);
+
+                    if (data.tags) {
+                        // Persist immediately per batch
+                        if (user) {
+                            const docRef = doc(db, "users", user.uid, "audit_tags", accountId);
+                            await setDoc(docRef, {
+                                tags: data.tags,
+                                updatedAt: new Date().toISOString()
+                            }, { merge: true });
+                        }
+                    }
+                    processed += chunk.length;
+                }
+                toast.dismiss();
+                toast.success(`Complete! Audited ${processed} emails.`);
+            }
+            // MODE B: Legacy / Remote Default (Let server decide)
+            else {
+                const res = await fetch("/api/audit-account", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ account, apiKey }),
+                });
+
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+
+                if (data.tags) {
+                    if (user) {
+                        const docRef = doc(db, "users", user.uid, "audit_tags", accountId);
+                        await setDoc(docRef, {
+                            tags: data.tags,
+                            updatedAt: new Date().toISOString()
+                        }, { merge: true });
+                        toast.success(`Analyzed ${data.count} emails`);
+                    }
+                }
+            }
+        } catch (error: any) {
+            console.error("Audit Failed", error);
+            toast.error(error.message || "Audit failed");
+        } finally {
+            setIsAuditing(false);
+        }
+    };
+
     return (
         <EmailContext.Provider value={{
             accounts,
@@ -311,7 +509,11 @@ export function EmailProvider({ children }: { children: ReactNode }) {
             fetchAllMail,
             handleToggleReadStatus,
             deleteAccount,
-            refreshAccounts
+            refreshAccounts,
+            updateEmailTags,
+            auditAccount,
+            isAuditing,
+            syncAllMail
         }}>
             {children}
         </EmailContext.Provider>
